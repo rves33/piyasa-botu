@@ -16,7 +16,6 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 }
 
-# Render port kontrolü için mini web sunucu
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -73,12 +72,8 @@ def calculate_rsi(closes, period=14):
     rs = avg_gain / avg_loss
     return 100.0 - (100.0 / (1.0 + rs))
 
-def get_bitget_candles_analysis(symbol, granularity="1h"):
-    # Bitget API standardizasyonu (1h -> 1H, 4h -> 4H, 30m -> 30min)
-    gran_map = {"30m": "30min", "1h": "1H", "4h": "4H", "1d": "1D"}
-    api_gran = gran_map.get(granularity.lower(), "1H")
-    
-    url = f"https://api.bitget.com/api/v2/spot/market/candles?symbol={symbol}&granularity={api_gran}&limit=30"
+def get_bitget_candles_analysis(symbol, granularity="1H"):
+    url = f"https://api.bitget.com/api/v2/spot/market/candles?symbol={symbol}&granularity={granularity}&limit=30"
     try:
         res = requests.get(url, headers=HEADERS, timeout=10).json()
         if res.get("code") == "00000" and res.get("data"):
@@ -92,7 +87,6 @@ def get_bitget_candles_analysis(symbol, granularity="1h"):
     except:
         pass
         
-    # Mum grafiği çekilemezse normal ticker'dan dene
     try:
         url2 = f"https://api.bitget.com/api/v2/spot/market/tickers?symbol={symbol}"
         res2 = requests.get(url2, headers=HEADERS, timeout=10).json()
@@ -122,30 +116,30 @@ def generate_signal(rsi, change):
     else:
         return f"⚖️ RSI: {rsi:.1f} (Nötr Bölge) -> 💤 *Yatay Seyir.*"
 
-def single_coin_report(symbol, granularity="1h"):
-    p, c, rsi = get_bitget_candles_analysis(symbol, granularity)
+def single_coin_report(symbol):
+    p, c, rsi = get_bitget_candles_analysis(symbol, "1H")
     name = symbol.replace("USDT", "")
     if p is not None:
         emo = "🟢" if c >= 0 else "🔴"
         signal = generate_signal(rsi, c)
-        msg = f"📊 *{name} ANALİZ RAPORU*\n"
-        msg += f"💵 Fiyat: *${p:,.4f}* | Değişim: *%{c:.2f}* {emo}\n"
-        msg += f"💡 {signal}"
+        msg = f"📊 *{name} ANALİZ RAPORU*\n" \
+              f"💵 Fiyat: *${p:,.4f}* | Değişim: *%{c:.2f}* {emo}\n" \
+              f"💡 {signal}"
         return msg
     else:
         return f"❌ *{name}* Bitget borsasında bulunamadı."
 
-def report(granularity="1h"):
+def report():
     fng_val, cls = get_fng()
     msg = f"📊 *BİTGET PİYASA RAPORU*\n😨 *Korku/Açgözlülük:* {fng_val}/100 ({cls})\n━━━━━━━━━━━━━━━━━━━━\n"
     for s in COINS:
-        p, c, rsi = get_bitget_candles_analysis(s, granularity)
+        p, c, rsi = get_bitget_candles_analysis(s, "1H")
         name = s.replace("USDT", "")
         if p is not None:
             emo = "🟢" if c >= 0 else "🔴"
             signal = generate_signal(rsi, c)
-            msg += f"🪙 *{name}:* ${p:,.2f} | %{c:.2f} {emo}\n"
-            msg += f"💡 {signal}\n\n"
+            msg += f"🪙 *{name}:* ${p:,.2f} | %{c:.2f} {emo}\n" \
+                   f"💡 {signal}\n\n"
         else:
             msg += f"🪙 *{name}:* Veri alınamadı\n\n"
     return msg
@@ -153,7 +147,7 @@ def report(granularity="1h"):
 def check_rsi_alerts():
     global rsi_alert_status
     for s in COINS:
-        p, _, rsi = get_bitget_candles_analysis(s, "1h")
+        p, _, rsi = get_bitget_candles_analysis(s, "1H")
         if p is None or rsi is None:
             continue
         
@@ -161,25 +155,13 @@ def check_rsi_alerts():
         current_status = rsi_alert_status.get(s, "NORMAL")
 
         if rsi >= 70 and current_status != "OVERBOUGHT":
-            alert_text = (
-                f"🚨 *AŞIRI ALIM (SHORT) ALARMI!*\n"
-                f"🪙 *{name}* 1h RSI: *{rsi:.1f}*\n"
-                f"💵 Fiyat: ${p:,.2f}\n"
-                f"💡 *Yorum:* Fiyat tepe/şişmiş bölgede, Short veya kar realizasyonu düşünülebilir."
-            )
+            alert_text = f"🚨 *AŞIRI ALIM (SHORT) ALARMI!*\n🪙 *{name}* 1h RSI: *{rsi:.1f}*\n💵 Fiyat: ${p:,.2f}\n💡 Fiyat şişmiş bölgede, Short veya kar realizasyonu düşünülebilir."
             send_msg(alert_text)
             rsi_alert_status[s] = "OVERBOUGHT"
-
         elif rsi <= 30 and current_status != "OVERSOLD":
-            alert_text = (
-                f"🚀 *AŞIRI SATIM (LONG) ALARMI!*\n"
-                f"🪙 *{name}* 1h RSI: *{rsi:.1f}*\n"
-                f"💵 Fiyat: ${p:,.2f}\n"
-                f"💡 *Yorum:* Fiyat dip/aşırı satım bölgesinde, Long denemesi için uygun olabilir."
-            )
+            alert_text = f"🚀 *AŞIRI SATIM (LONG) ALARMI!*\n🪙 *{name}* 1h RSI: *{rsi:.1f}*\n💵 Fiyat: ${p:,.2f}\n💡 Fiyat dip bölgede, Long denemesi için uygun olabilir."
             send_msg(alert_text)
             rsi_alert_status[s] = "OVERSOLD"
-
         elif 35 < rsi < 65:
             rsi_alert_status[s] = "NORMAL"
 
@@ -194,7 +176,7 @@ try:
 except:
     pass
 
-send_msg("🚀 *Bitget Botu Aktif!*\n\n• `/fiyat` - Tüm liste\n• `/fiyat btc` veya `/fiyat pi` - Tek coin analizi\n• `/ekle xrp` - Listeye ekle\n• `/sil xrp` - Listeden çıkar\n• `/liste` - Takip listesi")
+send_msg("🚀 *Bitget Botu Güncellendi ve Hazır!*")
 check_rsi_alerts()
 
 while True:
@@ -219,20 +201,16 @@ while True:
 
                 if cmd in ["/fiyat", "fiyat"]:
                     if len(cmd_parts) == 1:
-                        send_msg(report("1h"))
+                        send_msg(report())
                     else:
-                        arg = cmd_parts[1].lower()
-                        if arg in ["30m", "1h", "4h"]:
-                            send_msg(report(arg))
-                        else:
-                            # Belirli bir coin sorgulanıyorsa (Örn: /fiyat pi, /fiyat btc)
-                            sym = format_symbol(arg)
-                            send_msg(single_coin_report(sym, "1h"))
+                        arg = cmd_parts[1]
+                        sym = format_symbol(arg)
+                        send_msg(single_coin_report(sym))
 
                 elif cmd.startswith("/ekle"):
                     if len(cmd_parts) > 1:
                         symbol = format_symbol(cmd_parts[1])
-                        p, _, _ = get_bitget_candles_analysis(symbol, "1h")
+                        p, _, _ = get_bitget_candles_analysis(symbol, "1H")
                         if p is not None:
                             if symbol not in COINS:
                                 COINS.append(symbol)
