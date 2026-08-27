@@ -7,21 +7,25 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 TOKEN = "8208194190:AAHYoazYcJJhuxog01IKwXIj-TJFDYu77EA"
 CHAT_ID = "2129240893"
 
+# Render Web Servis Adresiniz (Uyku moduna girmesini engeller)
+RENDER_APP_URL = "https://piyasa-botu-1yi1.onrender.com"
+
 COINS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 last_alert_check_time = 0
+last_keep_alive_time = 0
 alert_memory = {}
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
 }
 
-# Render port kontrolü için mini web sunucu
+# 1. Render Port ve Sağlık Sunucusu
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain; charset=utf-8')
         self.end_headers()
-        self.wfile.write(b"Bot Aktif ve Calisiyor!")
+        self.wfile.write(b"OK - Bot Aktif")
     def log_message(self, format, *args):
         return
 
@@ -32,6 +36,7 @@ def run_dummy_server():
 
 threading.Thread(target=run_dummy_server, daemon=True).start()
 
+# 2. Telegram Mesaj Gönderme
 def send_msg(text):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     try:
@@ -39,6 +44,7 @@ def send_msg(text):
     except Exception as e:
         print(f"Mesaj hatasi: {e}")
 
+# 3. Korku & Açgözlülük Endeksi
 def get_fng():
     try:
         res = requests.get("https://api.alternative.me/fng/?limit=1", headers=HEADERS, timeout=5).json()
@@ -46,6 +52,7 @@ def get_fng():
     except:
         return 50, "Normal"
 
+# 4. Bitget Ticker Verisi
 def get_bitget_ticker(symbol):
     try:
         url = f"https://api.bitget.com/api/v2/spot/market/tickers?symbol={symbol}"
@@ -68,7 +75,6 @@ def format_symbol(coin_input):
     return coin
 
 def generate_signal(change, price, high24, low24, fng_val):
-    # Fiyatın 24s aralığındaki konumu (Stochastic Mantığı %0 - %100)
     rng = high24 - low24 if high24 > low24 else 1
     pos = ((price - low24) / rng) * 100
 
@@ -148,13 +154,24 @@ try:
 except:
     pass
 
-send_msg("🚀 *Bitget Botu Aktif ve Hazır!*")
+send_msg("🚀 *Bitget Botu 7/24 Kesintisiz Modda Başlatıldı!*")
 
+# Ana Döngü
 while True:
     now = time.time()
+
+    # Her 60 saniyede bir alarmları kontrol et
     if now - last_alert_check_time >= 60:
         check_auto_alerts()
         last_alert_check_time = now
+
+    # Her 8 dakikada bir Render'a ping atarak uykuya geçmesini engelle
+    if now - last_keep_alive_time >= 480:
+        try:
+            requests.get(RENDER_APP_URL, timeout=5)
+        except:
+            pass
+        last_keep_alive_time = now
 
     try:
         res = requests.get(
@@ -205,6 +222,6 @@ while True:
                     send_msg(f"📋 *Takip Listesi:* {', '.join(coin_names)}")
 
     except Exception as e:
-        print(f"Hata: {e}")
+        print(f"Telegram dongu hatasi: {e}")
 
     time.sleep(2)
