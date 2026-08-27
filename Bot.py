@@ -8,9 +8,7 @@ TOKEN = "8208194190:AAHYoazYcJJhuxog01IKwXIj-TJFDYu77EA"
 CHAT_ID = "2129240893"
 
 COINS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
-ALERT_THRESHOLD = 3.0
 
-# RSI alarmlarının sürekli spam yapmaması için son durum takibi
 rsi_alert_status = {}
 last_alert_check_time = 0
 
@@ -18,6 +16,7 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 }
 
+# Render port kontrolü için mini web sunucu
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -75,20 +74,34 @@ def calculate_rsi(closes, period=14):
     return 100.0 - (100.0 / (1.0 + rs))
 
 def get_bitget_candles_analysis(symbol, granularity="1h"):
-    url = f"https://api.bitget.com/api/v2/spot/market/candles?symbol={symbol}&granularity={granularity}&limit=30"
+    # Bitget API standardizasyonu (1h -> 1H, 4h -> 4H, 30m -> 30min)
+    gran_map = {"30m": "30min", "1h": "1H", "4h": "4H", "1d": "1D"}
+    api_gran = gran_map.get(granularity.lower(), "1H")
+    
+    url = f"https://api.bitget.com/api/v2/spot/market/candles?symbol={symbol}&granularity={api_gran}&limit=30"
     try:
         res = requests.get(url, headers=HEADERS, timeout=10).json()
         if res.get("code") == "00000" and res.get("data"):
-            candles = res["data"]
-            candles = list(reversed(candles))
+            candles = list(reversed(res["data"]))
             closes = [float(c[4]) for c in candles]
             current_price = closes[-1]
             prev_close = closes[-2] if len(closes) > 1 else current_price
             change = ((current_price - prev_close) / prev_close) * 100
             rsi = calculate_rsi(closes)
             return current_price, change, rsi
-    except Exception as e:
-        print(f"Mum Hatasi ({symbol}): {e}")
+    except:
+        pass
+        
+    # Mum grafiği çekilemezse normal ticker'dan dene
+    try:
+        url2 = f"https://api.bitget.com/api/v2/spot/market/tickers?symbol={symbol}"
+        res2 = requests.get(url2, headers=HEADERS, timeout=10).json()
+        if res2.get("code") == "00000" and res2.get("data"):
+            t = res2["data"][0]
+            return float(t["lastPr"]), float(t["change24h"]) * 100, 50.0
+    except:
+        pass
+
     return None, None, None
 
 def format_symbol(coin_input):
@@ -99,24 +112,32 @@ def format_symbol(coin_input):
 
 def generate_signal(rsi, change):
     if rsi >= 70:
-        return f"🔥 RSI: {rsi:.1f} (Aşırı Alım) -> 🔴 *Şişmiş Bölge, Short İçin Uygun / Düzeltme Beklenir!*"
+        return f"🔥 RSI: {rsi:.1f} (Aşırı Alım) -> 🔴 *Şişmiş Bölge, Short / Düzeltme Beklenebilir!*"
     elif rsi <= 30:
-        return f"💎 RSI: {rsi:.1f} (Aşırı Satım) -> 🟢 *Dip Bölge, Long İçin Uygun / Tepki Alımı!*"
+        return f"💎 RSI: {rsi:.1f} (Aşırı Satım) -> 🟢 *Dip Bölge, Long / Tepki Alımı İçin Uygun!*"
     elif rsi > 55 and change > 0:
-        return f"📈 RSI: {rsi:.1f} (Pozitif Momentum) -> 🟢 *Trend Yukarı, Kademeli Long.*"
+        return f"📈 RSI: {rsi:.1f} (Pozitif Trend) -> 🟢 *Kademeli Long.*"
     elif rsi < 45 and change < 0:
-        return f"📉 RSI: {rsi:.1f} (Negatif Momentum) -> 🔴 *Trend Aşağı, Kademeli Short.*"
+        return f"📉 RSI: {rsi:.1f} (Negatif Trend) -> 🔴 *Kademeli Short / Riskli.*"
     else:
-        return f"⚖️ RSI: {rsi:.1f} (Nötr Bölge) -> 💤 *Yatay Seyir, Net Yön Beklenmeli.*"
+        return f"⚖️ RSI: {rsi:.1f} (Nötr Bölge) -> 💤 *Yatay Seyir.*"
+
+def single_coin_report(symbol, granularity="1h"):
+    p, c, rsi = get_bitget_candles_analysis(symbol, granularity)
+    name = symbol.replace("USDT", "")
+    if p is not None:
+        emo = "🟢" if c >= 0 else "🔴"
+        signal = generate_signal(rsi, c)
+        msg = f"📊 *{name} ANALİZ RAPORU*\n"
+        msg += f"💵 Fiyat: *${p:,.4f}* | Değişim: *%{c:.2f}* {emo}\n"
+        msg += f"💡 {signal}"
+        return msg
+    else:
+        return f"❌ *{name}* Bitget borsasında bulunamadı."
 
 def report(granularity="1h"):
     fng_val, cls = get_fng()
-    timeframe_labels = {"30m": "30 Dakikalık", "1h": "1 Saatlik", "4h": "4 Saatlik"}
-    label = timeframe_labels.get(granularity, granularity)
-    
-    msg = f"📊 *BİTGET TEKNİK ANALİZ RAPORU ({label})*\n😨 *Korku:* {fng_val}/100 ({cls})\n"
-    msg += "━━━━━━━━━━━━━━━━━━━━\n"
-    
+    msg = f"📊 *BİTGET PİYASA RAPORU*\n😨 *Korku/Açgözlülük:* {fng_val}/100 ({cls})\n━━━━━━━━━━━━━━━━━━━━\n"
     for s in COINS:
         p, c, rsi = get_bitget_candles_analysis(s, granularity)
         name = s.replace("USDT", "")
@@ -127,10 +148,9 @@ def report(granularity="1h"):
             msg += f"💡 {signal}\n\n"
         else:
             msg += f"🪙 *{name}:* Veri alınamadı\n\n"
-            
     return msg
 
-def check_rsi_and_moves():
+def check_rsi_alerts():
     global rsi_alert_status
     for s in COINS:
         p, _, rsi = get_bitget_candles_analysis(s, "1h")
@@ -140,33 +160,30 @@ def check_rsi_and_moves():
         name = s.replace("USDT", "")
         current_status = rsi_alert_status.get(s, "NORMAL")
 
-        # Aşırı Alım Alarmı (Short Bölgesi)
         if rsi >= 70 and current_status != "OVERBOUGHT":
             alert_text = (
                 f"🚨 *AŞIRI ALIM (SHORT) ALARMI!*\n"
-                f"🪙 *{name}* 1h RSI değeri *{rsi:.1f}* seviyesine ulaştı!\n"
-                f"💵 Anlık Fiyat: ${p:,.2f}\n"
-                f"💡 *Yorum:* Fiyat şişmiş durumda, short yönlü işlemler veya kar realizasyonu için değerlendirilebilir."
+                f"🪙 *{name}* 1h RSI: *{rsi:.1f}*\n"
+                f"💵 Fiyat: ${p:,.2f}\n"
+                f"💡 *Yorum:* Fiyat tepe/şişmiş bölgede, Short veya kar realizasyonu düşünülebilir."
             )
             send_msg(alert_text)
             rsi_alert_status[s] = "OVERBOUGHT"
 
-        # Aşırı Satım Alarmı (Long Bölgesi)
         elif rsi <= 30 and current_status != "OVERSOLD":
             alert_text = (
                 f"🚀 *AŞIRI SATIM (LONG) ALARMI!*\n"
-                f"🪙 *{name}* 1h RSI değeri *{rsi:.1f}* seviyesine düştü!\n"
-                f"💵 Anlık Fiyat: ${p:,.2f}\n"
-                f"💡 *Yorum:* Aşırı satım bölgesinde, dip seviyelerden long denemeleri veya kademeli alım için uygun olabilir."
+                f"🪙 *{name}* 1h RSI: *{rsi:.1f}*\n"
+                f"💵 Fiyat: ${p:,.2f}\n"
+                f"💡 *Yorum:* Fiyat dip/aşırı satım bölgesinde, Long denemesi için uygun olabilir."
             )
             send_msg(alert_text)
             rsi_alert_status[s] = "OVERSOLD"
 
-        # Normal bölgeye döndüğünde durumu sıfırla ki tekrar alarm verebilsin
         elif 35 < rsi < 65:
             rsi_alert_status[s] = "NORMAL"
 
-# Eski biriken mesajları temizle
+# Eski bekleyen mesajları temizle
 last_id = None
 try:
     initial_updates = requests.get(f"https://api.telegram.org/bot{TOKEN}/getUpdates", timeout=5).json()
@@ -177,13 +194,13 @@ try:
 except:
     pass
 
-send_msg("🚀 *Otomatik RSI Long/Short Alarm Botu Aktif!*\n\nCoinler aşırı alım (RSI > 70) veya aşırı satım (RSI < 30) bölgelerine girdiğinde size otomatik haber verecektir.")
-check_rsi_and_moves()
+send_msg("🚀 *Bitget Botu Aktif!*\n\n• `/fiyat` - Tüm liste\n• `/fiyat btc` veya `/fiyat pi` - Tek coin analizi\n• `/ekle xrp` - Listeye ekle\n• `/sil xrp` - Listeden çıkar\n• `/liste` - Takip listesi")
+check_rsi_alerts()
 
 while True:
     now = time.time()
     if now - last_alert_check_time >= 60:
-        check_rsi_and_moves()
+        check_rsi_alerts()
         last_alert_check_time = now
 
     try:
@@ -197,16 +214,20 @@ while True:
             last_id = u["update_id"] + 1
             if "message" in u and "text" in u["message"]:
                 txt = u["message"]["text"].strip()
-                cmd_parts = txt.lower().split()
-                cmd = cmd_parts[0] if len(cmd_parts) > 0 else ""
+                cmd_parts = txt.split()
+                cmd = cmd_parts[0].lower() if len(cmd_parts) > 0 else ""
 
                 if cmd in ["/fiyat", "fiyat"]:
-                    tf = "1h"
-                    if len(cmd_parts) > 1:
-                        requested_tf = cmd_parts[1]
-                        if requested_tf in ["30m", "1h", "4h"]:
-                            tf = requested_tf
-                    send_msg(report(granularity=tf))
+                    if len(cmd_parts) == 1:
+                        send_msg(report("1h"))
+                    else:
+                        arg = cmd_parts[1].lower()
+                        if arg in ["30m", "1h", "4h"]:
+                            send_msg(report(arg))
+                        else:
+                            # Belirli bir coin sorgulanıyorsa (Örn: /fiyat pi, /fiyat btc)
+                            sym = format_symbol(arg)
+                            send_msg(single_coin_report(sym, "1h"))
 
                 elif cmd.startswith("/ekle"):
                     if len(cmd_parts) > 1:
@@ -215,7 +236,7 @@ while True:
                         if p is not None:
                             if symbol not in COINS:
                                 COINS.append(symbol)
-                                send_msg(f"✅ *{symbol.replace('USDT','')}* listeye eklendi! (Anlık: ${p:,.2f})")
+                                send_msg(f"✅ *{symbol.replace('USDT','')}* listeye eklendi! (Fiyat: ${p:,.4f})")
                             else:
                                 send_msg(f"⚠️ Bu coin zaten listenizde var.")
                         else:
