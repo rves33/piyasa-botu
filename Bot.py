@@ -73,7 +73,6 @@ def calculate_rsi(closes, period=14):
     return 100.0 - (100.0 / (1.0 + rs))
 
 def get_bitget_data(symbol):
-    # 1. Aşama: Anlık Ticker Fiyatı ve 24s Değişim Çek
     price = None
     change = 0.0
     rsi = 50.0
@@ -91,7 +90,6 @@ def get_bitget_data(symbol):
     if price is None:
         return None, None, None
 
-    # 2. Aşama: RSI Hesaplaması için Mum Verisi Çek
     try:
         url_candles = f"https://api.bitget.com/api/v2/spot/market/candles?symbol={symbol}&granularity=1H&limit=30"
         c_res = requests.get(url_candles, headers=HEADERS, timeout=5).json()
@@ -172,7 +170,6 @@ def check_rsi_alerts():
         elif 35 < rsi < 65:
             rsi_alert_status[s] = "NORMAL"
 
-# Eski bekleyen mesajları temizle
 last_id = None
 try:
     initial_updates = requests.get(f"https://api.telegram.org/bot{TOKEN}/getUpdates", timeout=5).json()
@@ -183,7 +180,7 @@ try:
 except:
     pass
 
-send_msg("🚀 *Bitget Botu Güncellendi!*")
+send_msg("🚀 *Bitget Botu Güncellendi ve Hazır!*")
 check_rsi_alerts()
 
 while True:
@@ -244,4 +241,3 @@ while True:
         print(f"Döngü hatası: {e}")
 
     time.sleep(2)
-
