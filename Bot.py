@@ -5,7 +5,6 @@ TOKEN = "8208194190:AAHYoazYcJJhuxog01IKwXIj-TJFDYu77EA"
 CHAT_ID = "2129240893"
 COINS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 
-# Bitget ve Telegram istekleri için tarayıcı başlığı
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 }
