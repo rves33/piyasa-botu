@@ -6,8 +6,6 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 TOKEN = "8208194190:AAHYoazYcJJhuxog01IKwXIj-TJFDYu77EA"
 CHAT_ID = "2129240893"
-
-# Render Web Servis Adresiniz (Uyku moduna girmesini engeller)
 RENDER_APP_URL = "https://piyasa-botu-1yi1.onrender.com"
 
 COINS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
@@ -16,10 +14,9 @@ last_keep_alive_time = 0
 alert_memory = {}
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 }
 
-# 1. Render Port ve Sağlık Sunucusu
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -36,7 +33,6 @@ def run_dummy_server():
 
 threading.Thread(target=run_dummy_server, daemon=True).start()
 
-# 2. Telegram Mesaj Gönderme
 def send_msg(text):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     try:
@@ -44,7 +40,6 @@ def send_msg(text):
     except Exception as e:
         print(f"Mesaj hatasi: {e}")
 
-# 3. Korku & Açgözlülük Endeksi
 def get_fng():
     try:
         res = requests.get("https://api.alternative.me/fng/?limit=1", headers=HEADERS, timeout=5).json()
@@ -52,21 +47,61 @@ def get_fng():
     except:
         return 50, "Normal"
 
-# 4. Bitget Ticker Verisi
-def get_bitget_ticker(symbol):
+def calculate_rsi(closes, period=14):
+    if len(closes) < period + 1:
+        return 50.0
+    gains = []
+    losses = []
+    for i in range(1, len(closes)):
+        diff = closes[i] - closes[i - 1]
+        if diff >= 0:
+            gains.append(diff)
+            losses.append(0)
+        else:
+            gains.append(0)
+            losses.append(abs(diff))
+    
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    
+    for i in range(period, len(gains)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+        
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return 100.0 - (100.0 / (1.0 + rs))
+
+def get_bitget_candles_data(symbol, tf="1h"):
+    gran_map = {"30m": "30min", "1h": "1h", "4h": "4h", "1d": "1day"}
+    gran = gran_map.get(tf.lower(), "1h")
+    
+    url = f"https://api.bitget.com/api/v2/spot/market/candles?symbol={symbol}&granularity={gran}&limit=30"
     try:
-        url = f"https://api.bitget.com/api/v2/spot/market/tickers?symbol={symbol}"
         res = requests.get(url, headers=HEADERS, timeout=6).json()
-        if res.get("code") == "00000" and res.get("data"):
-            t = res["data"][0]
-            price = float(t.get("lastPr", 0))
-            change = float(t.get("change24h", 0)) * 100
-            high24 = float(t.get("high24h", price))
-            low24 = float(t.get("low24h", price))
-            return price, change, high24, low24
+        if res.get("code") == "00000" and res.get("data") and len(res["data"]) > 1:
+            candles = list(reversed(res["data"]))
+            closes = [float(c[4]) for c in candles]
+            current_price = closes[-1]
+            prev_close = closes[-2]
+            change = ((current_price - prev_close) / prev_close) * 100
+            rsi = calculate_rsi(closes)
+            return current_price, change, rsi
     except Exception as e:
-        print(f"Ticker hatasi ({symbol}): {e}")
-    return None, None, None, None
+        print(f"Mum verisi hatasi ({symbol}): {e}")
+
+    # Mum verisi gelmezse ticker'dan son fiyatı çek
+    try:
+        url_t = f"https://api.bitget.com/api/v2/spot/market/tickers?symbol={symbol}"
+        res_t = requests.get(url_t, headers=HEADERS, timeout=5).json()
+        if res_t.get("code") == "00000" and res_t.get("data"):
+            t = res_t["data"][0]
+            return float(t.get("lastPr", 0)), float(t.get("change24h", 0)) * 100, 50.0
+    except:
+        pass
+
+    return None, None, None
 
 def format_symbol(coin_input):
     coin = coin_input.strip().upper()
@@ -74,45 +109,44 @@ def format_symbol(coin_input):
         coin += "USDT"
     return coin
 
-def generate_signal(change, price, high24, low24, fng_val):
-    rng = high24 - low24 if high24 > low24 else 1
-    pos = ((price - low24) / rng) * 100
-
-    if pos >= 85 or change >= 10:
-        return f"🔥 Tepe Bölgesi (%{pos:.0f}) -> 🔴 *Aşırı Alım / Short & Düzeltme Riski Yüksek!*"
-    elif pos <= 15 or change <= -10:
-        return f"💎 Dip Bölgesi (%{pos:.0f}) -> 🟢 *Aşırı Satım / Tepki Alımı & Long İçin Fırsat!*"
-    elif change > 3:
-        return f"📈 Güçlü Alıcı (%{pos:.0f}) -> 🟢 *Trend Pozitif, Kademeli Long.*"
-    elif change < -3:
-        return f"📉 Güçlü Satıcı (%{pos:.0f}) -> 🔴 *Trend Negatif, Kademeli Short.*"
+def generate_signal(rsi, change):
+    if rsi >= 70:
+        return f"🔥 RSI: {rsi:.1f} (Aşırı Alım) -> 🔴 *Şişmiş Bölge, Düzeltme / Short Fırsatı!*"
+    elif rsi <= 30:
+        return f"💎 RSI: {rsi:.1f} (Aşırı Satım) -> 🟢 *Dip Bölge, Tepki Alımı / Long Fırsatı!*"
+    elif rsi > 55 and change > 0:
+        return f"📈 RSI: {rsi:.1f} (Pozitif Trend) -> 🟢 *Trend Yukarı, Long Denenebilir.*"
+    elif rsi < 45 and change < 0:
+        return f"📉 RSI: {rsi:.1f} (Negatif Trend) -> 🔴 *Trend Aşağı, Short / Riskli Bölge.*"
     else:
-        return f"⚖️ Nötr Alan (%{pos:.0f}) -> 💤 *Yatay Seyir, Net Yön Beklenmeli.*"
+        return f"⚖️ RSI: {rsi:.1f} (Nötr Bölge) -> 💤 *Yatay Seyir, Fırsat Bekleyin.*"
 
-def single_coin_report(symbol):
-    p, c, h, l = get_bitget_ticker(symbol)
+def single_coin_report(symbol, tf="1h"):
+    p, c, rsi = get_bitget_candles_data(symbol, tf)
     name = symbol.replace("USDT", "")
+    tf_label = {"30m": "30 Dakikalık", "1h": "1 Saatlik", "4h": "4 Saatlik"}.get(tf, tf)
+    
     if p is not None:
-        fng_val, _ = get_fng()
         emo = "🟢" if c >= 0 else "🔴"
-        signal = generate_signal(c, p, h, l, fng_val)
-        msg = f"📊 *{name} ANALİZ RAPORU*\n" \
-              f"💵 Fiyat: *${p:,.4f}* | 24s Değişim: *%{c:.2f}* {emo}\n" \
-              f"🔝 24s Zirve: ${h:,.4f} | 🔻 24s Dip: ${l:,.4f}\n" \
+        signal = generate_signal(rsi, c)
+        msg = f"📊 *{name} ANALİZ RAPORU ({tf_label})*\n" \
+              f"💵 Fiyat: *${p:,.4f}* | Değişim: *%{c:.2f}* {emo}\n" \
               f"💡 {signal}"
         return msg
     else:
         return f"❌ *{name}* Bitget borsasında bulunamadı."
 
-def report():
+def report(tf="1h"):
     fng_val, cls = get_fng()
-    msg = f"📊 *BİTGET PİYASA RAPORU*\n😨 *Korku/Açgözlülük:* {fng_val}/100 ({cls})\n━━━━━━━━━━━━━━━━━━━━\n"
+    tf_label = {"30m": "30 Dakikalık", "1h": "1 Saatlik", "4h": "4 Saatlik"}.get(tf, tf)
+    
+    msg = f"📊 *BİTGET PİYASA RAPORU ({tf_label})*\n😨 *Korku/Açgözlülük:* {fng_val}/100 ({cls})\n━━━━━━━━━━━━━━━━━━━━\n"
     for s in COINS:
-        p, c, h, l = get_bitget_ticker(s)
+        p, c, rsi = get_bitget_candles_data(s, tf)
         name = s.replace("USDT", "")
         if p is not None:
             emo = "🟢" if c >= 0 else "🔴"
-            signal = generate_signal(c, p, h, l, fng_val)
+            signal = generate_signal(rsi, c)
             msg += f"🪙 *{name}:* ${p:,.4f} | %{c:.2f} {emo}\n" \
                    f"💡 {signal}\n\n"
         else:
@@ -121,29 +155,25 @@ def report():
 
 def check_auto_alerts():
     global alert_memory
-    fng_val, _ = get_fng()
     for s in COINS:
-        p, c, h, l = get_bitget_ticker(s)
-        if p is None:
+        p, c, rsi = get_bitget_candles_data(s, "1h")
+        if p is None or rsi is None:
             continue
         
         name = s.replace("USDT", "")
-        rng = h - l if h > l else 1
-        pos = ((p - l) / rng) * 100
         prev_state = alert_memory.get(s, "NORMAL")
 
-        if pos >= 90 and prev_state != "HIGH":
-            alert_text = f"🚨 *AŞIRI ALIM (SHORT) UYARISI!*\n🪙 *{name}* 24s tepe noktasına (%{pos:.0f}) ulaştı!\n💵 Fiyat: ${p:,.4f}\n💡 Fiyat çok şişti, Short / Kâr alma değerlendirilebilir."
+        if rsi >= 70 and prev_state != "HIGH":
+            alert_text = f"🚨 *AŞIRI ALIM (SHORT) UYARISI!*\n🪙 *{name}* 1h RSI: *{rsi:.1f}*\n💵 Fiyat: ${p:,.4f}\n💡 Fiyat şişmiş tepe bölgesinde, Short / Kâr alma değerlendirilebilir."
             send_msg(alert_text)
             alert_memory[s] = "HIGH"
-        elif pos <= 10 and prev_state != "LOW":
-            alert_text = f"🚀 *AŞIRI SATIM (LONG) UYARISI!*\n🪙 *{name}* 24s dip noktasına (%{pos:.0f}) indi!\n💵 Fiyat: ${p:,.4f}\n💡 Dip seviyede, Long / Tepki alımı fırsatı olabilir."
+        elif rsi <= 30 and prev_state != "LOW":
+            alert_text = f"🚀 *AŞIRI SATIM (LONG) UYARISI!*\n🪙 *{name}* 1h RSI: *{rsi:.1f}*\n💵 Fiyat: ${p:,.4f}\n💡 Fiyat dip seviyede, Long / Tepki alımı fırsatı olabilir."
             send_msg(alert_text)
             alert_memory[s] = "LOW"
-        elif 30 < pos < 70:
+        elif 35 < rsi < 65:
             alert_memory[s] = "NORMAL"
 
-# Eski bekleyen mesajları temizle
 last_id = None
 try:
     init_res = requests.get(f"https://api.telegram.org/bot{TOKEN}/getUpdates", timeout=5).json()
@@ -154,18 +184,15 @@ try:
 except:
     pass
 
-send_msg("🚀 *Bitget Botu 7/24 Kesintisiz Modda Başlatıldı!*")
+send_msg("🚀 *Bitget Botu Çoklu Zaman Dilimi Desteğiyle Güncellendi!*")
 
-# Ana Döngü
 while True:
     now = time.time()
 
-    # Her 60 saniyede bir alarmları kontrol et
     if now - last_alert_check_time >= 60:
         check_auto_alerts()
         last_alert_check_time = now
 
-    # Her 8 dakikada bir Render'a ping atarak uykuya geçmesini engelle
     if now - last_keep_alive_time >= 480:
         try:
             requests.get(RENDER_APP_URL, timeout=5)
@@ -184,20 +211,30 @@ while True:
             last_id = u["update_id"] + 1
             if "message" in u and "text" in u["message"]:
                 txt = u["message"]["text"].strip()
-                cmd_parts = txt.split()
-                cmd = cmd_parts[0].lower() if len(cmd_parts) > 0 else ""
+                parts = txt.split()
+                cmd = parts[0].lower() if len(parts) > 0 else ""
 
                 if cmd in ["/fiyat", "fiyat"]:
-                    if len(cmd_parts) == 1:
-                        send_msg(report())
+                    # Argümanları ayrıştır
+                    tf = "1h"
+                    target_coin = None
+
+                    for arg in parts[1:]:
+                        arg_low = arg.lower()
+                        if arg_low in ["30m", "1h", "4h"]:
+                            tf = arg_low
+                        else:
+                            target_coin = format_symbol(arg)
+
+                    if target_coin:
+                        send_msg(single_coin_report(target_coin, tf))
                     else:
-                        sym = format_symbol(cmd_parts[1])
-                        send_msg(single_coin_report(sym))
+                        send_msg(report(tf))
 
                 elif cmd.startswith("/ekle"):
-                    if len(cmd_parts) > 1:
-                        symbol = format_symbol(cmd_parts[1])
-                        p, _, _, _ = get_bitget_ticker(symbol)
+                    if len(parts) > 1:
+                        symbol = format_symbol(parts[1])
+                        p, _, _ = get_bitget_candles_data(symbol, "1h")
                         if p is not None:
                             if symbol not in COINS:
                                 COINS.append(symbol)
@@ -208,8 +245,8 @@ while True:
                             send_msg(f"❌ *{symbol}* Bitget'te bulunamadı.")
 
                 elif cmd.startswith("/sil"):
-                    if len(cmd_parts) > 1:
-                        symbol = format_symbol(cmd_parts[1])
+                    if len(parts) > 1:
+                        symbol = format_symbol(parts[1])
                         if symbol in COINS:
                             COINS.remove(symbol)
                             alert_memory.pop(symbol, None)
