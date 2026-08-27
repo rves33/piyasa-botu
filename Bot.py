@@ -8,18 +8,18 @@ TOKEN = "8208194190:AAHYoazYcJJhuxog01IKwXIj-TJFDYu77EA"
 CHAT_ID = "2129240893"
 
 COINS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
-
-rsi_alert_status = {}
 last_alert_check_time = 0
+alert_memory = {}
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
 }
 
+# Render port kontrolü için mini web sunucu
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
-        self.send_header('Content-type', 'text/html')
+        self.send_header('Content-type', 'text/plain; charset=utf-8')
         self.end_headers()
         self.wfile.write(b"Bot Aktif ve Calisiyor!")
     def log_message(self, format, *args):
@@ -35,9 +35,9 @@ threading.Thread(target=run_dummy_server, daemon=True).start()
 def send_msg(text):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     try:
-        requests.post(url, data={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}, timeout=10)
+        requests.post(url, json={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}, timeout=10)
     except Exception as e:
-        print(f"Mesaj gonderme hatasi: {e}")
+        print(f"Mesaj hatasi: {e}")
 
 def get_fng():
     try:
@@ -46,62 +46,20 @@ def get_fng():
     except:
         return 50, "Normal"
 
-def calculate_rsi(closes, period=14):
-    if len(closes) < period + 1:
-        return 50.0
-    gains = []
-    losses = []
-    for i in range(1, len(closes)):
-        diff = closes[i] - closes[i - 1]
-        if diff >= 0:
-            gains.append(diff)
-            losses.append(0)
-        else:
-            gains.append(0)
-            losses.append(abs(diff))
-    
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
-    
-    for i in range(period, len(gains)):
-        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
-        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
-        
-    if avg_loss == 0:
-        return 100.0
-    rs = avg_gain / avg_loss
-    return 100.0 - (100.0 / (1.0 + rs))
-
-def get_bitget_data(symbol):
-    price = None
-    change = 0.0
-    rsi = 50.0
-
+def get_bitget_ticker(symbol):
     try:
-        url_ticker = f"https://api.bitget.com/api/v2/spot/market/tickers?symbol={symbol}"
-        res = requests.get(url_ticker, headers=HEADERS, timeout=5).json()
+        url = f"https://api.bitget.com/api/v2/spot/market/tickers?symbol={symbol}"
+        res = requests.get(url, headers=HEADERS, timeout=6).json()
         if res.get("code") == "00000" and res.get("data"):
             t = res["data"][0]
             price = float(t.get("lastPr", 0))
             change = float(t.get("change24h", 0)) * 100
-    except:
-        pass
-
-    if price is None:
-        return None, None, None
-
-    try:
-        url_candles = f"https://api.bitget.com/api/v2/spot/market/candles?symbol={symbol}&granularity=1H&limit=30"
-        c_res = requests.get(url_candles, headers=HEADERS, timeout=5).json()
-        if c_res.get("code") == "00000" and c_res.get("data"):
-            candles = list(reversed(c_res["data"]))
-            closes = [float(c[4]) for c in candles]
-            if len(closes) > 5:
-                rsi = calculate_rsi(closes)
-    except:
-        rsi = 50.0
-
-    return price, change, rsi
+            high24 = float(t.get("high24h", price))
+            low24 = float(t.get("low24h", price))
+            return price, change, high24, low24
+    except Exception as e:
+        print(f"Ticker hatasi ({symbol}): {e}")
+    return None, None, None, None
 
 def format_symbol(coin_input):
     coin = coin_input.strip().upper()
@@ -109,26 +67,32 @@ def format_symbol(coin_input):
         coin += "USDT"
     return coin
 
-def generate_signal(rsi, change):
-    if rsi >= 70:
-        return f"🔥 RSI: {rsi:.1f} (Aşırı Alım) -> 🔴 *Şişmiş Bölge, Short / Düzeltme Beklenebilir!*"
-    elif rsi <= 30:
-        return f"💎 RSI: {rsi:.1f} (Aşırı Satım) -> 🟢 *Dip Bölge, Long / Tepki Alımı İçin Uygun!*"
+def generate_signal(change, price, high24, low24, fng_val):
+    # Fiyatın 24s aralığındaki konumu (Stochastic Mantığı %0 - %100)
+    rng = high24 - low24 if high24 > low24 else 1
+    pos = ((price - low24) / rng) * 100
+
+    if pos >= 85 or change >= 10:
+        return f"🔥 Tepe Bölgesi (%{pos:.0f}) -> 🔴 *Aşırı Alım / Short & Düzeltme Riski Yüksek!*"
+    elif pos <= 15 or change <= -10:
+        return f"💎 Dip Bölgesi (%{pos:.0f}) -> 🟢 *Aşırı Satım / Tepki Alımı & Long İçin Fırsat!*"
     elif change > 3:
-        return f"📈 RSI: {rsi:.1f} (Yükseliş Trendi) -> 🟢 *Trend Yukarı, Long Denenebilir.*"
+        return f"📈 Güçlü Alıcı (%{pos:.0f}) -> 🟢 *Trend Pozitif, Kademeli Long.*"
     elif change < -3:
-        return f"📉 RSI: {rsi:.1f} (Düşüş Trendi) -> 🔴 *Trend Aşağı, Short / Dikkatli Olun.*"
+        return f"📉 Güçlü Satıcı (%{pos:.0f}) -> 🔴 *Trend Negatif, Kademeli Short.*"
     else:
-        return f"⚖️ RSI: {rsi:.1f} (Nötr Bölge) -> 💤 *Yatay Seyir, Net Fırsat Bekleyin.*"
+        return f"⚖️ Nötr Alan (%{pos:.0f}) -> 💤 *Yatay Seyir, Net Yön Beklenmeli.*"
 
 def single_coin_report(symbol):
-    p, c, rsi = get_bitget_data(symbol)
+    p, c, h, l = get_bitget_ticker(symbol)
     name = symbol.replace("USDT", "")
     if p is not None:
+        fng_val, _ = get_fng()
         emo = "🟢" if c >= 0 else "🔴"
-        signal = generate_signal(rsi, c)
+        signal = generate_signal(c, p, h, l, fng_val)
         msg = f"📊 *{name} ANALİZ RAPORU*\n" \
-              f"💵 Fiyat: *${p:,.4f}* | Değişim (24s): *%{c:.2f}* {emo}\n" \
+              f"💵 Fiyat: *${p:,.4f}* | 24s Değişim: *%{c:.2f}* {emo}\n" \
+              f"🔝 24s Zirve: ${h:,.4f} | 🔻 24s Dip: ${l:,.4f}\n" \
               f"💡 {signal}"
         return msg
     else:
@@ -138,55 +102,58 @@ def report():
     fng_val, cls = get_fng()
     msg = f"📊 *BİTGET PİYASA RAPORU*\n😨 *Korku/Açgözlülük:* {fng_val}/100 ({cls})\n━━━━━━━━━━━━━━━━━━━━\n"
     for s in COINS:
-        p, c, rsi = get_bitget_data(s)
+        p, c, h, l = get_bitget_ticker(s)
         name = s.replace("USDT", "")
         if p is not None:
             emo = "🟢" if c >= 0 else "🔴"
-            signal = generate_signal(rsi, c)
-            msg += f"🪙 *{name}:* ${p:,.2f} | %{c:.2f} {emo}\n" \
+            signal = generate_signal(c, p, h, l, fng_val)
+            msg += f"🪙 *{name}:* ${p:,.4f} | %{c:.2f} {emo}\n" \
                    f"💡 {signal}\n\n"
         else:
             msg += f"🪙 *{name}:* Veri alınamadı\n\n"
     return msg
 
-def check_rsi_alerts():
-    global rsi_alert_status
+def check_auto_alerts():
+    global alert_memory
+    fng_val, _ = get_fng()
     for s in COINS:
-        p, _, rsi = get_bitget_data(s)
-        if p is None or rsi is None:
+        p, c, h, l = get_bitget_ticker(s)
+        if p is None:
             continue
         
         name = s.replace("USDT", "")
-        current_status = rsi_alert_status.get(s, "NORMAL")
+        rng = h - l if h > l else 1
+        pos = ((p - l) / rng) * 100
+        prev_state = alert_memory.get(s, "NORMAL")
 
-        if rsi >= 70 and current_status != "OVERBOUGHT":
-            alert_text = f"🚨 *AŞIRI ALIM (SHORT) ALARMI!*\n🪙 *{name}* 1h RSI: *{rsi:.1f}*\n💵 Fiyat: ${p:,.2f}\n💡 Fiyat tepe/şişmiş bölgede, Short veya kar realizasyonu düşünülebilir."
+        if pos >= 90 and prev_state != "HIGH":
+            alert_text = f"🚨 *AŞIRI ALIM (SHORT) UYARISI!*\n🪙 *{name}* 24s tepe noktasına (%{pos:.0f}) ulaştı!\n💵 Fiyat: ${p:,.4f}\n💡 Fiyat çok şişti, Short / Kâr alma değerlendirilebilir."
             send_msg(alert_text)
-            rsi_alert_status[s] = "OVERBOUGHT"
-        elif rsi <= 30 and current_status != "OVERSOLD":
-            alert_text = f"🚀 *AŞIRI SATIM (LONG) ALARMI!*\n🪙 *{name}* 1h RSI: *{rsi:.1f}*\n💵 Fiyat: ${p:,.2f}\n💡 Fiyat dip bölgede, Long denemesi için uygun olabilir."
+            alert_memory[s] = "HIGH"
+        elif pos <= 10 and prev_state != "LOW":
+            alert_text = f"🚀 *AŞIRI SATIM (LONG) UYARISI!*\n🪙 *{name}* 24s dip noktasına (%{pos:.0f}) indi!\n💵 Fiyat: ${p:,.4f}\n💡 Dip seviyede, Long / Tepki alımı fırsatı olabilir."
             send_msg(alert_text)
-            rsi_alert_status[s] = "OVERSOLD"
-        elif 35 < rsi < 65:
-            rsi_alert_status[s] = "NORMAL"
+            alert_memory[s] = "LOW"
+        elif 30 < pos < 70:
+            alert_memory[s] = "NORMAL"
 
+# Eski bekleyen mesajları temizle
 last_id = None
 try:
-    initial_updates = requests.get(f"https://api.telegram.org/bot{TOKEN}/getUpdates", timeout=5).json()
-    results = initial_updates.get("result", [])
-    if results:
-        last_id = results[-1]["update_id"] + 1
+    init_res = requests.get(f"https://api.telegram.org/bot{TOKEN}/getUpdates", timeout=5).json()
+    items = init_res.get("result", [])
+    if items:
+        last_id = items[-1]["update_id"] + 1
         requests.get(f"https://api.telegram.org/bot{TOKEN}/getUpdates", params={"offset": last_id}, timeout=5)
 except:
     pass
 
-send_msg("🚀 *Bitget Botu Güncellendi ve Hazır!*")
-check_rsi_alerts()
+send_msg("🚀 *Bitget Botu Aktif ve Hazır!*")
 
 while True:
     now = time.time()
     if now - last_alert_check_time >= 60:
-        check_rsi_alerts()
+        check_auto_alerts()
         last_alert_check_time = now
 
     try:
@@ -213,7 +180,7 @@ while True:
                 elif cmd.startswith("/ekle"):
                     if len(cmd_parts) > 1:
                         symbol = format_symbol(cmd_parts[1])
-                        p, _, _ = get_bitget_data(symbol)
+                        p, _, _, _ = get_bitget_ticker(symbol)
                         if p is not None:
                             if symbol not in COINS:
                                 COINS.append(symbol)
@@ -228,7 +195,7 @@ while True:
                         symbol = format_symbol(cmd_parts[1])
                         if symbol in COINS:
                             COINS.remove(symbol)
-                            rsi_alert_status.pop(symbol, None)
+                            alert_memory.pop(symbol, None)
                             send_msg(f"🗑️ *{symbol.replace('USDT','')}* listeden çıkarıldı.")
                         else:
                             send_msg(f"⚠️ Listenizde bulunmuyor.")
@@ -238,6 +205,6 @@ while True:
                     send_msg(f"📋 *Takip Listesi:* {', '.join(coin_names)}")
 
     except Exception as e:
-        print(f"Döngü hatası: {e}")
+        print(f"Hata: {e}")
 
     time.sleep(2)
