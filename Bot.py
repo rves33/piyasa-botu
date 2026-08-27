@@ -176,7 +176,7 @@ try:
 except:
     pass
 
-send_msg("🚀 *Bitget Botu Güncellendi ve Hazır!*")
+send_msg("🚀 *Bot Hazır!*")
 check_rsi_alerts()
 
 while True:
