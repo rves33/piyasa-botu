@@ -1,20 +1,38 @@
+import os
 import time
 import requests
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 TOKEN = "8208194190:AAHYoazYcJJhuxog01IKwXIj-TJFDYu77EA"
 CHAT_ID = "2129240893"
 
-# Başlangıç coin listesi ve alarm eşiği (%)
 COINS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
-ALERT_THRESHOLD = 3.0  # %3 ve üzeri ani hareketlerde alarm verir
+ALERT_THRESHOLD = 3.0
 
-# Fiyat geçmişi takibi (Sembol -> Son kaydedilen fiyat)
 last_prices = {}
 last_alert_check_time = 0
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 }
+
+# Render'in port kontrolunu gecmek icin mini web sunucu
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/html')
+        self.end_headers()
+        self.wfile.write(b"Bot Aktif ve Calisiyor!")
+    def log_message(self, format, *args):
+        return
+
+def run_dummy_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server.serve_forever()
+
+threading.Thread(target=run_dummy_server, daemon=True).start()
 
 def send_msg(text):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
@@ -74,7 +92,6 @@ def check_sudden_moves():
             old_p = last_prices[s]
             diff_percent = ((p - old_p) / old_p) * 100
 
-            # Belirlenen eşik üzerinde ani hareket varsa alarm gönder
             if diff_percent >= ALERT_THRESHOLD:
                 alert_text = (
                     f"🚀 *ANİ YÜKSELİŞ ALARMI!*\n"
@@ -84,7 +101,7 @@ def check_sudden_moves():
                     f"💵 Yeni Fiyat: ${p:,.2f}"
                 )
                 send_msg(alert_text)
-                last_prices[s] = p  # Yeni baz fiyatı güncelle
+                last_prices[s] = p
             elif diff_percent <= -ALERT_THRESHOLD:
                 alert_text = (
                     f"🚨 *ANİ DÜŞÜŞ ALARMI!*\n"
@@ -94,19 +111,16 @@ def check_sudden_moves():
                     f"💵 Yeni Fiyat: ${p:,.2f}"
                 )
                 send_msg(alert_text)
-                last_prices[s] = p  # Yeni baz fiyatı güncelle
+                last_prices[s] = p
         else:
-            # İlk okuma
             last_prices[s] = p
 
-# Başlangıç mesajı ve ilk fiyat kaydı
 send_msg("🚀 *Bitget Alarm & Piyasa Botu Güncellendi!*\n\nKomutlar:\n• `/fiyat` - Güncel rapor\n• `/ekle xrp` - Listeye coin ekler\n• `/sil xrp` - Listeden çıkarır\n• `/liste` - Takip listesi\n• `/alarm 3` - Alarm yüzdesini ayarlar")
 check_sudden_moves()
 last_id = None
 
 while True:
     now = time.time()
-    # Her 60 saniyede bir ani fiyat hareketlerini kontrol et
     if now - last_alert_check_time >= 60:
         check_sudden_moves()
         last_alert_check_time = now
